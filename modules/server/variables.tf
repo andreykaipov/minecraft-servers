@@ -1,8 +1,3 @@
-variable "resource_group_name" {
-  type    = string
-  default = "minecraft-rg"
-}
-
 variable "location" {
   type    = string
   default = "eastus"
@@ -17,3 +12,6 @@ variable "name" {
   type = string
 }
 
+variable "bedrock_version" {
+  type = string
+}

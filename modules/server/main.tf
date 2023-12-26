@@ -12,6 +12,8 @@ output "secrets" {
 }
 
 locals {
+  disk_lun = 10
+
   secrets = {
     for e in one(data.onepassword_item.secrets.section).field :
     e.label => e.value
@@ -58,23 +60,31 @@ resource "onepassword_item" "generated_secrets" {
   }
 }
 
-# Create a resource group
 resource "azurerm_resource_group" "rg" {
-  name     = var.resource_group_name
+  name     = "${var.name}-rg"
   location = var.location
+  tags = {
+    name         = var.name
+    kind         = "mc-rg"
+    skip_destroy = true
+  }
 }
 
 # Create a virtual network
 resource "azurerm_virtual_network" "vnet" {
-  name                = "minecraft-vnet"
+  name                = "${var.name}-vnet"
   address_space       = ["10.0.0.0/16"]
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
+  tags = {
+    name = var.name
+    kind = "mc-vnet"
+  }
 }
 
 # Create a subnet
 resource "azurerm_subnet" "subnet" {
-  name                 = "minecraft-subnet"
+  name                 = "${var.name}-subnet"
   resource_group_name  = azurerm_resource_group.rg.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.0.1.0/24"]
@@ -82,17 +92,25 @@ resource "azurerm_subnet" "subnet" {
 
 # Create a public IP address
 resource "azurerm_public_ip" "public_ip" {
-  name                = "minecraft-publicip"
+  name                = "${var.name}-publicip"
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   allocation_method   = "Static"
+  tags = {
+    name = var.name
+    kind = "mc-ip"
+  }
 }
 
 # Create a network security group and associate it with the virtual machine's network interface
 resource "azurerm_network_security_group" "nsg" {
-  name                = "minecraft-nsg"
+  name                = "${var.name}-nsg"
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
+  tags = {
+    name = var.name
+    kind = "mc-nsg"
+  }
 }
 
 resource "azurerm_network_security_rule" "allow_minecraft" {
@@ -102,7 +120,7 @@ resource "azurerm_network_security_rule" "allow_minecraft" {
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
-  destination_port_range      = "19132"
+  destination_port_range      = "19132-19133"
   source_address_prefix       = "*"
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.rg.name
@@ -111,10 +129,13 @@ resource "azurerm_network_security_rule" "allow_minecraft" {
 
 # Create a network interface and associate it with the subnet and public IP address
 resource "azurerm_network_interface" "nic" {
-  name                = "minecraft-nic"
+  name                = "${var.name}-nic"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-
+  tags = {
+    name = var.name
+    kind = "mc-nic"
+  }
   ip_configuration {
     name                          = "minecraft-ipconfig"
     subnet_id                     = azurerm_subnet.subnet.id
@@ -132,6 +153,10 @@ resource "azurerm_linux_virtual_machine" "server" {
   network_interface_ids = [
     azurerm_network_interface.nic.id,
   ]
+  tags = {
+    name = var.name
+    kind = "mc-server"
+  }
 
   admin_ssh_key {
     username   = random_string.vm_username.result
@@ -151,7 +176,63 @@ resource "azurerm_linux_virtual_machine" "server" {
   }
 }
 
-# Output the public IP address of the virtual machine
+resource "azurerm_managed_disk" "data" {
+  name                 = "${var.name}-mc-data"
+  location             = azurerm_resource_group.rg.location
+  resource_group_name  = azurerm_resource_group.rg.name
+  storage_account_type = "StandardSSD_LRS"
+  create_option        = "Empty"
+  disk_size_gb         = "4"
+  tags = {
+    name         = var.name
+    kind         = "mc-data"
+    skip_destroy = true
+  }
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "azurerm_virtual_machine_data_disk_attachment" "attachment" {
+  managed_disk_id    = azurerm_managed_disk.data.id
+  virtual_machine_id = azurerm_linux_virtual_machine.server.id
+  lun                = local.disk_lun
+  caching            = "ReadWrite"
+  create_option      = "Attach"
+}
+
+resource "null_resource" "configure" {
+  triggers = {
+    id       = azurerm_linux_virtual_machine.server.id
+    setup_sh = filesha256("${path.module}/config/scripts/setup.sh")
+  }
+
+  depends_on = [
+    azurerm_virtual_machine_data_disk_attachment.attachment,
+  ]
+
+  connection {
+    type        = "ssh"
+    user        = random_string.vm_username.result
+    host        = azurerm_public_ip.public_ip.ip_address
+    private_key = tls_private_key.vm_public_key.private_key_pem
+  }
+
+  provisioner "file" {
+    source      = "${path.module}/config"
+    destination = "/tmp"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo mkdir -p /opt/minecraft",
+      "sudo mv /tmp/config/server/* /opt/minecraft",
+      "sudo mv /tmp/config/systemd/* /etc/systemd/system",
+      "version=${var.bedrock_version} lun=${local.disk_lun} sudo -E sh /tmp/config/scripts/setup.sh",
+    ]
+  }
+}
+
 output "public_ip_address" {
   value = azurerm_public_ip.public_ip.ip_address
 }
