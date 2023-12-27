@@ -2,7 +2,7 @@
 # shellcheck disable=SC2155
 
 log() { printf '\033[1;33m%s\033[0m\n' "$*" >&2; }
-get() { op read "op://github/$repo/$1"; }
+get() { op read "op://$repo/$1"; }
 
 main() {
         root=$(git rev-parse --show-toplevel)
@@ -10,7 +10,7 @@ main() {
         log "Setting up $repo"
 
         : "${OP_SERVICE_ACCOUNT_TOKEN?needs to be set for op CLI}"
-        op user get --me
+        op user get --me >&2
 
         cmd=$1
         shift
@@ -21,8 +21,9 @@ main() {
 }
 
 tofu() {
-        # parse -chdir flag out
+        # parse -chdir flag out from args
         chdir_val=$(echo "$@" | grep -Po -- '-chdir=\K[^ ]+')
+        chdir_val_slug=$(printf '%s' "$chdir_val" | tr -c 'a-zA-Z0-9-_.' _)
         for arg; do
                 shift
                 if echo "$arg" | grep -qE -- '-chdir=[^ ]+'; then continue; fi
@@ -36,16 +37,17 @@ tofu() {
         shift
         case "$cmd" in
                 init)
-                        address="https://tf.kaipov.com/$repo/$chdir_val"
+                        address="https://tf.kaipov.com/$repo/$chdir_val_slug"
+                        f="/tmp/backend.$chdir_val_slug.conf"
                         {
                                 printf 'address="%s"\n' "$address"
                                 printf 'lock_address="%s"\n' "$address"
                                 printf 'unlock_address="%s"\n' "$address"
-                                printf 'username="%s"\n' "$(get tf_backend_username)"
-                                printf 'password="%s"\n' "$(get tf_backend_password)"
-                        } >"$chdir_val/backend.conf"
+                                printf 'username="%s"\n' "$(get setup/tf_backend_username)"
+                                printf 'password="%s"\n' "$(get setup/tf_backend_password)"
+                        } >"$f"
                         set -x
-                        command tofu -chdir="$chdir_val" init -backend-config=backend.conf "$@"
+                        command tofu -chdir="$chdir_val" init -backend-config="$f" "$@"
                         ;;
                 *)
                         command tofu -chdir="$chdir_val" "$cmd" "$@"
