@@ -13,3 +13,4 @@ devenv.local.nix
 # tf
 .terraform
 terraform.tfstate*
+plan.out
