@@ -9,9 +9,36 @@ variable "vm_size" {
 }
 
 variable "name" {
-  type = string
+  type        = string
+  description = <<EOF
+An identifying name for this module. It can be your favorite food, or something
+boring like the FQDN you'd like to use for the server. In the latter case, you
+won't need to set the `cf_full_record` variable.
+
+This variable will be prepended to all Azure resources created by this module.
+EOF
 }
 
-variable "bedrock_version" {
-  type = string
+variable "server_name" {
+  type        = string
+  default     = "Dedicated Server"
+  description = "The server name shown in the in-game server list."
+}
+
+variable "world_name" {
+  type        = string
+  default     = "Bedrock level"
+  description = <<EOF
+The name of the world, e.g. "Bedrock level".
+Change this if you want to load a different world on the server.
+EOF
+}
+
+variable "cf_full_record" {
+  type        = string
+  default     = ""
+  description = <<EOF
+The full Cloudflare DNS record, e.g. my.mc.example.com.
+If empty, its value will try to be parsed from the `name` variable.
+EOF
 }

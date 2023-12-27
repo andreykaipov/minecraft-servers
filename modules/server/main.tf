@@ -1,72 +1,27 @@
-data "onepassword_vault" "vault" {
-  name = "minecraft-servers"
-}
-
-data "onepassword_item" "secrets" {
-  vault = data.onepassword_vault.vault.uuid
-  title = "setup"
-}
-
-output "secrets" {
-  value = data.onepassword_item.secrets
-}
-
 locals {
-  disk_lun = 10
+  disk_lun   = 10
+  backup_dir = "/opt/mc-backups"
 
-  secrets = {
-    for e in one(data.onepassword_item.secrets.section).field :
-    e.label => e.value
+  setup_disk_vars = {
+    lun       = local.disk_lun
+    mount_dir = local.backup_dir
+  }
+  setup_mcbe_vars = {
+    server_name = var.server_name
+    level_name  = var.world_name
+    backup_dir  = local.backup_dir
   }
 
-  az_service_principal = jsondecode(local.secrets["az_service_principal_json"])
-}
-
-# generate random username and password
-resource "random_string" "vm_username" {
-  length  = 10
-  special = false
-  upper   = false
-  numeric = false
-}
-
-resource "tls_private_key" "vm_public_key" {
-  algorithm = "RSA"
-  rsa_bits  = 4096
-}
-
-resource "onepassword_item" "generated_secrets" {
-  vault    = data.onepassword_vault.vault.uuid
-  title    = var.name
-  category = "password"
-  section {
-    label = ""
-    field {
-      label = "public_ip_address"
-      value = azurerm_public_ip.public_ip.ip_address
-    }
-    field {
-      label = "vm_username"
-      value = random_string.vm_username.result
-    }
-    field {
-      label = "vm_private_key"
-      value = tls_private_key.vm_public_key.private_key_pem
-    }
-    field {
-      label = "vm_public_key"
-      value = tls_private_key.vm_public_key.public_key_openssh
-    }
-  }
+  setup_disk_env = join(" ", [for k, v in local.setup_disk_vars : "${k}=\"${v}\""])
+  setup_mcbe_env = join(" ", [for k, v in local.setup_mcbe_vars : "${k}=\"${v}\""])
 }
 
 resource "azurerm_resource_group" "rg" {
   name     = "${var.name}-rg"
   location = var.location
   tags = {
-    name         = var.name
-    kind         = "mc-rg"
-    skip_destroy = true
+    name = var.name
+    kind = "mc-rg"
   }
 }
 
@@ -118,7 +73,7 @@ resource "azurerm_network_security_rule" "allow_minecraft" {
   priority                    = 1001
   direction                   = "Inbound"
   access                      = "Allow"
-  protocol                    = "Tcp"
+  protocol                    = "*"
   source_port_range           = "*"
   destination_port_range      = "19132-19133"
   source_address_prefix       = "*"
@@ -184,12 +139,11 @@ resource "azurerm_managed_disk" "data" {
   create_option        = "Empty"
   disk_size_gb         = "4"
   tags = {
-    name         = var.name
-    kind         = "mc-data"
-    skip_destroy = true
+    name = var.name
+    kind = "mc-data"
   }
   lifecycle {
-    prevent_destroy = true
+    prevent_destroy = false
   }
 }
 
@@ -203,8 +157,11 @@ resource "azurerm_virtual_machine_data_disk_attachment" "attachment" {
 
 resource "null_resource" "configure" {
   triggers = {
-    id       = azurerm_linux_virtual_machine.server.id
-    setup_sh = filesha256("${path.module}/config/scripts/setup.sh")
+    id             = azurerm_linux_virtual_machine.server.id
+    setup_disk_sh  = filesha256("${path.module}/config/scripts/setup-disk.sh")
+    setup_mcbe_sh  = filesha256("${path.module}/config/scripts/setup-mcbe.sh")
+    setup_disk_env = local.setup_disk_env
+    setup_mcbe_env = local.setup_mcbe_env
   }
 
   depends_on = [
@@ -225,18 +182,8 @@ resource "null_resource" "configure" {
 
   provisioner "remote-exec" {
     inline = [
-      "sudo mkdir -p /opt/minecraft",
-      "sudo mv /tmp/config/server/* /opt/minecraft",
-      "sudo mv /tmp/config/systemd/* /etc/systemd/system",
-      "version=${var.bedrock_version} lun=${local.disk_lun} sudo -E sh /tmp/config/scripts/setup.sh",
+      "${local.setup_disk_env} sudo -E sh /tmp/config/scripts/setup-disk.sh",
+      "${local.setup_mcbe_env} sudo -E sh /tmp/config/scripts/setup-mcbe.sh",
     ]
   }
-}
-
-output "public_ip_address" {
-  value = azurerm_public_ip.public_ip.ip_address
-}
-
-output "vm" {
-  value = azurerm_linux_virtual_machine.server
 }
